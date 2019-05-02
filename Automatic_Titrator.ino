@@ -5,7 +5,7 @@ long pulseCount = 0;
 int valveVoltage = 255;
 
 // time in milliseconds that valve is open
-int valveOpenTime = 500;
+int valveOpenTime = 2000;
 
 // time in milliseconds that valve is closed
 int valveCloseTime = 2000;
@@ -20,13 +20,13 @@ int valvePin = 5;
 int sensorPin = 0;
 
 // number of readings averaged to find accurate reading from pH reader
-int numReadings = 10;
+int numReadings = 100;
 
 // calibration coefficient - must be calculated through buffer data extraction
-float slope = 1.0;
+float offset;
 
 // offset coefficient - must be calculated through buffer data extraction
-float offset = 1.0;
+float slope;
 
 // set pin to 0
 int pinOff = 0;
@@ -78,10 +78,10 @@ String input;
 void setup() {
   // raise communications barrier
   Serial.begin(9600);
-
+  Serial.println("Enter 0 for tests, 1 for real deal");
+  delay(50);
   // user choice
   input = "";
-  Serial.println("Enter 0 for tests, 1 for real deal");
 
   // obtain and interpret user input
   while (true) {
@@ -91,14 +91,49 @@ void setup() {
       input = Serial.readString();
 
       // test
-      input.trim();
+      input.trim(); 
       if (input == "0") {
         Serial.println("Entering test mode");
         tests();
         break;
       }
       else if (input == "1") {
-        Serial.println("Entering the real deal");
+        // initial values are these so the meter returns uncalibrated results
+        slope = 1;
+        offset = 0;
+
+        // must calibrate meter before starting titration
+        calibrateMeter();
+
+        // obtain desired pH and delta values
+        Serial.println("\nEnter equivalence point pH");
+        while(true){
+         if(Serial.available()){
+          input = Serial.readString();
+          input.trim();
+          desiredpH = input.toFloat();
+          Serial.print("Equivalence point pH: "); Serial.println(desiredpH);
+          break;
+         }
+        }
+        Serial.println("Enter delta");
+        while(true){
+         if(Serial.available()){
+          input = Serial.readString();
+          input.trim();
+          delta = input.toFloat();
+          Serial.print("Delta: "); Serial.println(delta);
+          break;
+         }
+        }
+
+        // wait for final confirmation and start titration
+        Serial.println("Now, clean the meter, place it in your starting solution (analyte), and press enter to start titrating.");
+        while(true){
+          if(Serial.available()){
+            break;  
+          }
+        }
         realOperation();
         break;
       }
@@ -113,6 +148,97 @@ void setup() {
 void loop() {
   // put your main code here, to run repeatedly:
 
+}
+
+void calibrateMeter(){
+  float bufferpH1, readpH1, bufferpH2, readpH2;
+  Serial.println("\n Before you start titrating, you must calibrate your meter.");
+  Serial.println("Place your meter in the first buffer solution and type in its pH: ");
+  while(true){
+    if(Serial.available()){
+      input = Serial.readString();
+      input.trim();
+      bufferpH1 = input.toFloat();
+      readpH1 = getpHReading();
+      break;
+    }
+  }
+  Serial.println("Now, clean the meter, place it in the second buffer solution, and type in its pH: ");
+  while(true){
+    if(Serial.available()){
+      input = Serial.readString();
+      input.trim();
+      bufferpH2 = input.toFloat();
+      readpH2 = getpHReading();
+      break;
+    }  
+  }
+  // slope = deltaY / deltaX, or in this case, known pH difference / uncalibrated reading difference
+  slope = (bufferpH2 - bufferpH1) / (readpH2 - readpH1);
+
+  // offset = known pH - (the slope * uncalibrated reading), or in this case, the average of both readings in that formula 
+  offset = ((bufferpH1 - (slope*readpH1)) + (bufferpH2 - (slope*readpH2))) / 2;
+  Serial.println("Obtained following results");
+  Serial.print("buffer one actual pH: "); Serial.println(bufferpH1);
+  Serial.print("buffer one read pH: "); Serial.println(readpH1);
+  Serial.print("buffer two actual pH: "); Serial.println(bufferpH2);
+  Serial.print("buffer two read pH: "); Serial.println(readpH2);
+  Serial.print("slope: "); Serial.println(slope);
+  Serial.print("offset: "); Serial.println(offset);
+}
+
+
+// opens valve in real mode
+void realOperation() {
+  while (true) {
+      // read user input
+      input = Serial.readString();
+      pulseCount++;
+      Serial.print("\nPulse ");
+      Serial.println(pulseCount);
+      
+      // open valve
+      Serial.print("Valve open | ");
+      analogWrite(valvePin, valveVoltage);
+      delay(valveOpenTime);
+
+      // close valve
+      analogWrite(valvePin, pinOff);
+      Serial.print("closed | ");
+      
+      Serial.print("stirring | ");
+      // allow solution to be stirred to ensure proper mixing
+      delay(stirTime);
+      
+      // get the next reading
+      solutionpH = getpHReading();
+      Serial.print("New reading: ");
+      Serial.println(solutionpH);
+      
+      // TODO: This only works for strong acid / strong base, 
+      // TODO: research and refine for any type of titration
+      if(solutionpH >= desiredpH - delta && solutionpH <= desiredpH + delta){
+        Serial.println("Titration complete within +/- error - process stopped");
+        break;
+      }
+      else if(solutionpH > desiredpH + delta){
+        Serial.println("Solution pH is above equivalence point + delta - process stopped");
+        break;
+      }
+  }
+}
+
+// get average reading from pH reader adapter
+float getpHReading(){
+    float pHsum = 0;
+    for(int i = 0; i < numReadings; i++){
+      unsigned long raw = analogRead(sensorPin);
+
+      // convert from raw reading to actual voltage and add to sum
+      pHsum += raw*(5.0/1023.0);
+    }
+    // return average of these readings
+    return (pHsum / numReadings)*slope + offset;
 }
 
 void tests() {
@@ -287,65 +413,4 @@ boolean verifypHReading(float reading) {
 float addWater(float solutionVolume) {
   solutionVolume += volumePlus;
   return solutionVolume;
-}
-
-// opens valve in real mode
-void realOperation() {
-  Serial.println("Press enter to start");
-  while (true) {
-    // wait for user to continue
-    if (Serial.available()) {
-      
-      // read user input
-      input = Serial.readString();
-      pulseCount++;
-      Serial.print("Pulse ");
-      Serial.println(pulseCount);
-      
-      // open valve
-      Serial.print("\nValve open... ");
-      analogWrite(valvePin, valveVoltage);
-      delay(valveOpenTime);
-
-      // close valve
-      analogWrite(valvePin, pinOff);
-      Serial.print("closed... Estimated Volume: ");
-      delay(valveCloseTime);
-
-      // allow solution to be stirred to ensure proper mixing
-      delay(stirTime);
-      
-      // get the next reading
-      solutionpH = getpHReading();
-      Serial.print("New reading: ");
-      Serial.println(solutionpH);
-      
-      // TODO: This only works for strong acid / strong base, 
-      // TODO: research and refine for any type of titration
-      if(solutionpH >= 6.8 && solutionpH <= 7.2){
-        Serial.println("Titration complete - process stopped");
-        break;
-      }
-      else if(solutionpH > 7.2){
-        Serial.println("Solution pH is above equivalence point + delta (0.2) - process stopped");
-        break;
-      }
-      else{
-        Serial.println("Press enter to continue");  
-      }
-    }
-  }
-}
-
-// get average reading from pH reader adapter
-float getpHReading(){
-    long pHsum = 0;
-    for(int i = 0; i < numReadings; i++){
-      unsigned long raw = analogRead(sensorPin);
-
-      // convert from raw reading to actual voltage and add to sum
-      pHsum = raw*(5.0/1023.0);
-    }
-    // return average of these readings
-    return (pHsum / numReadings)*slope + offset;
 }
