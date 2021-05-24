@@ -7,11 +7,14 @@ int valveVoltage = 255;
 // time in milliseconds that valve is open
 int valveOpenTime = 2000;
 
+// time in milliseconds to dispense one drop with 90% accuracy
+int oneDropTime = 125;
+
 // time in milliseconds that valve is closed
 int valveCloseTime = 2000;
 
 // time in milliseconds that stirring occurs
-int stirTime = 2000;
+int stirTime = 6000;
 
 // pin that holds connection to valve
 int valvePin = 5;
@@ -30,6 +33,9 @@ float slope;
 
 // set pin to 0
 int pinOff = 0;
+
+// coefficient to alter dispense time TODO pinpoint an acceptable number
+float dispenseTimeCoeff = 1.1;
 
 // volumetric calibration parameters (initial guess)
 float v2 = -0.0004;
@@ -89,9 +95,9 @@ void setup() {
     if (Serial.available()) {
       // read user input
       input = Serial.readString();
+      input.trim(); 
 
       // test
-      input.trim(); 
       if (input == "0") {
         Serial.println("Entering test mode");
         tests();
@@ -99,12 +105,31 @@ void setup() {
       }
       else if (input == "1") {
         // initial values are these so the meter returns uncalibrated results
-        slope = 1;
-        offset = 0;
+        slope= -3.53;
+        offset= 14.34;
 
+
+        // calibration offer
+        Serial.print("Current calibration values are: slope= ");
+        Serial.print(slope);
+        Serial.print(", offset= ");
+        Serial.print(offset);
+        Serial.println(". Do you wish to recalibrate? y/n");
+        
         // must calibrate meter before starting titration
-        calibrateMeter();
-
+        while (true) {
+            // wait for serial to open
+            if (Serial.available()) {
+                // read user input
+                input = Serial.readString();
+                input.trim();
+                input.toLowerCase();
+                break; 
+            }
+        }
+        if(input == "y"){
+            calibrateMeter();
+        }
         // obtain desired pH and delta values
         Serial.println("\nEnter equivalence point pH");
         while(true){
@@ -128,12 +153,19 @@ void setup() {
         }
 
         // wait for final confirmation and start titration
-        Serial.println("Now, clean the meter, place it in your starting solution (analyte), and press enter to start titrating.");
+        Serial.println("Now, clean the meter, place it in your starting solution, and press enter to obtain the initial pH reading.");
         while(true){
-          if(Serial.available()){
-            break;  
+          bool read = false;
+          while(Serial.available()){
+            Serial.readString().trim();
+            read = true;
+          }
+          if (read){
+            break;
           }
         }
+        Serial.flush();
+        delay(1000);
         realOperation();
         break;
       }
@@ -190,9 +222,17 @@ void calibrateMeter(){
 
 // opens valve in real mode
 void realOperation() {
+  Serial.print("Initial pH reading: ");
+  solutionpH = getpHReading();
+  Serial.println(solutionpH);
+  Serial.println("Press enter to start titrating");
+  while(true){
+      if(Serial.available()){
+          break;  
+      }
+  }
   while (true) {
-      // read user input
-      input = Serial.readString();
+      // increment and display pulse 
       pulseCount++;
       Serial.print("\nPulse ");
       Serial.println(pulseCount);
@@ -207,14 +247,36 @@ void realOperation() {
       Serial.print("closed | ");
       
       Serial.print("stirring | ");
+      Serial.println();
       // allow solution to be stirred to ensure proper mixing
       delay(stirTime);
       
       // get the next reading
+      float oldReading = solutionpH;
       solutionpH = getpHReading();
-      Serial.print("New reading: ");
-      Serial.println(solutionpH);
       
+      // eqValue = valve open time - (change in reading * dispenseCoeff) 
+      if(valveOpenTime != oneDropTime){
+        float eqValue;
+        if(solutionpH - oldReading > 0.0){
+            // TODO 2 = initial dispense time
+            eqValue = (2 - ((solutionpH - oldReading) * dispenseTimeCoeff)) * 1000;
+            valveOpenTime = (eqValue < valveOpenTime) ? ((eqValue <= oneDropTime) ? oneDropTime : (eqValue)) : valveOpenTime;
+        }
+        Serial.print("oldReading | solutionpH | eqval | valveOpentime: ");
+        Serial.print(oldReading);
+        Serial.print(" | ");
+        Serial.print(solutionpH);
+        Serial.print(" | ");
+        Serial.print(eqValue);
+        Serial.print(" | ");
+        Serial.println(valveOpenTime); 
+      }
+        Serial.print("New reading: ");
+        Serial.println(solutionpH);
+        Serial.print("New dispense time: ");
+        Serial.print(valveOpenTime/1000.0);
+        Serial.println("s");
       // TODO: This only works for strong acid / strong base, 
       // TODO: research and refine for any type of titration
       if(solutionpH >= desiredpH - delta && solutionpH <= desiredpH + delta){
@@ -401,12 +463,7 @@ float obtainSolutionpHTest(float result) {
 // verifies reading was correctly read
 boolean verifypHReading(float reading) {
   // check if pH reading is within max and min pH values
-  if (reading > 14 || reading < 0) {
-    return false;
-  }
-  else {
-    return true;
-  }
+  return (reading > 14 || reading < 0);
 }
 
 // simulates fluid dispersal
